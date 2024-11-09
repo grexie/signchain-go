@@ -8,6 +8,8 @@ type ClientOptions = client.ClientOptions
 var NewClientOptions = client.NewClientOptions
 
 type Wallet = client.Wallet
+type AuthSecretKey = client.AuthSecretKey
+type AuthSignature = client.AuthSignature
 
 type SignOptions = client.SignOptions
 var NewSignOptions = client.NewSignOptions

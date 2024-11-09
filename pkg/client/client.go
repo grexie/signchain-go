@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -18,9 +20,10 @@ type Client interface {
 	URL() string
 	APIKey() string
 	VaultID() string
+	AuthSecretKey() *AuthSecretKey
 
 	Sign(ctx context.Context, options SignOptions) (SignResult, error)
-	
+
 	CreateWallet(ctx context.Context, options CreateWalletOptions) (Wallet, error)
 	GetWallet(ctx context.Context, address common.Address) (Wallet, error)
 	ListWallets(ctx context.Context, options ListWalletsOptions) (ListWalletsResult, error)
@@ -35,6 +38,11 @@ type client struct {
 	URL_     string
 	APIKey_  string
 	VaultID_ string
+	AuthSecretKey_ *AuthSecretKey
+}
+
+func (c *client) AuthSecretKey() *AuthSecretKey {
+	return c.AuthSecretKey_
 }
 
 // APIKey implements Client.
@@ -64,12 +72,43 @@ type ClientOptions interface {
 
 	VaultID() string
 	SetVaultID(vaultId string) ClientOptions
+
+	AuthSecretKey() *AuthSecretKey
+	SetAuthSecretKey(authSecretKey AuthSecretKey) ClientOptions
+	SetAuthSecretKeyFromString(authSecretKey string) ClientOptions
+	SetAuthSecretKeyFromEnv() ClientOptions
 }
 
 type clientOptions struct {
 	URL_     *string
 	APIKey_  string
 	VaultID_ string
+	AuthSecretKey_ *AuthSecretKey
+}
+
+// AuthSecretKey implements ClientOptions.
+func (c *clientOptions) AuthSecretKey() *AuthSecretKey {
+	return c.AuthSecretKey_
+}
+
+// SetAuthSecretKey implements ClientOptions.
+func (c *clientOptions) SetAuthSecretKey(authSecretKey AuthSecretKey) ClientOptions {
+	c.AuthSecretKey_ = &authSecretKey
+	return c
+}
+
+// SetAuthSecretKeyFromEnv implements ClientOptions.
+func (c *clientOptions) SetAuthSecretKeyFromEnv() ClientOptions {
+	if k, ok := os.LookupEnv("VAULT_AUTH_SECRET_KEY"); ok {
+		c.SetAuthSecretKeyFromString(k)
+	}
+	return c
+}
+
+// SetAuthSecretKeyFromString implements ClientOptions.
+func (c *clientOptions) SetAuthSecretKeyFromString(authSecretKey string) ClientOptions {
+	c.SetAuthSecretKey(AuthSecretKey(authSecretKey))
+	return c
 }
 
 // APIKey implements ClientOptions.
@@ -131,12 +170,12 @@ func NewClient(options ClientOptions) (Client, error) {
 }
 
 type apiResponse[T any] struct {
-	Success bool `json:"success"`
-	Data T `json:"data,omitempty"`
-	Error *string `json:"error,omitempty"`
+	Success bool    `json:"success"`
+	Data    T       `json:"data,omitempty"`
+	Error   *string `json:"error,omitempty"`
 }
 
-func (c *client) Request(ctx context.Context, method string, path string, body any, response any) (error) {
+func (c *client) Request(ctx context.Context, method string, path string, body any, response any) error {
 	var r *http.Request
 	if body == nil {
 		if req, err := http.NewRequestWithContext(ctx, method, fmt.Sprintf("%s%s", c.URL_, path), nil); err != nil {
@@ -151,6 +190,59 @@ func (c *client) Request(ctx context.Context, method string, path string, body a
 			return err
 		} else {
 			r = req
+			r.Header.Set("Content-Type", "application/json")
+		}
+	}
+
+	r.Header.Set("Accept", "application/json")
+	r.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.APIKey_))
+
+	if res, err := http.DefaultClient.Do(r); err != nil {
+		return err
+	} else if res.StatusCode >= 400 {
+		var response apiResponse[any]
+		if b, err := io.ReadAll(res.Body); err != nil {
+			return err
+		} else if err := json.Unmarshal(b, &response); err != nil {
+			return err
+		} else {
+			return errors.New(*response.Error)
+		}
+	} else if res.Header.Get("Content-Type") == "application/json" {
+		if b, err := io.ReadAll(res.Body); err != nil {
+			return err
+		} else if err := json.Unmarshal(b, &response); err != nil {
+			return err
+		} else {
+			return nil
+		}
+	} else {
+		return nil
+	}
+}
+
+func (c *client) RequestWithAuthSignature(ctx context.Context, method string, path string, body any, response any) error {
+	var r *http.Request
+	if body == nil {
+		if req, err := http.NewRequestWithContext(ctx, method, fmt.Sprintf("%s%s", c.URL_, path), nil); err != nil {
+			return err
+		} else {
+			r = req
+		}
+	} else {
+		if b, err := json.Marshal(body); err != nil {
+			return err
+		} else if req, err := http.NewRequestWithContext(ctx, method, fmt.Sprintf("%s%s", c.URL_, path), bytes.NewBuffer(b)); err != nil {
+			return err
+		} else {
+			r = req
+			if c.AuthSecretKey_ != nil {
+				if s, err := c.AuthSecretKey_.Sign(time.Now(), b); err != nil {
+					return err
+				} else {
+					r.Header.Set("X-Vault-Auth-Signature", s.String())
+				}
+			}
 			r.Header.Set("Content-Type", "application/json")
 		}
 	}

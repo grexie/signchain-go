@@ -176,7 +176,7 @@ var _ SignResult = &signResult{}
 func (c *client) Sign(ctx context.Context, options SignOptions) (SignResult, error) {
 	var response apiResponse[signResult]
 
-	if err := c.Request(ctx, "POST", fmt.Sprintf("/api/v1/vaults/%s/sign", c.VaultID_), options, &response); err != nil {
+	if err := c.RequestWithAuthSignature(ctx, "POST", fmt.Sprintf("/api/v1/vaults/%s/sign", c.VaultID_), options, &response); err != nil {
 		return nil, err
 	} else {
 		return &response.Data, nil
